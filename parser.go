@@ -6,6 +6,9 @@ import (
 	"unicode"
 )
 
+// nodeType 标识解析后节点的类型。
+//
+// 解析器只区分文档、元素、文本和原始节点，足以支撑当前 Thymeleaf 子集的渲染。
 type nodeType int
 
 const (
@@ -15,12 +18,18 @@ const (
 	rawNode
 )
 
+// attr 表示一个 HTML 属性。
+//
+// HasValue 用于区分 `disabled` 这类布尔属性和 `disabled=""` 这类显式空值属性。
 type attr struct {
 	Name     string
 	Value    string
 	HasValue bool
 }
 
+// node 是模板解析后的轻量节点结构。
+//
+// Data 在元素节点里表示标签名，在文本或原始节点里表示文本内容。
 type node struct {
 	Type        nodeType
 	Data        string
@@ -29,6 +38,9 @@ type node struct {
 	SelfClosing bool
 }
 
+// htmlVoidTags 记录 HTML 中不需要结束标签的 void 元素。
+//
+// 渲染时这些标签会输出为 `<img>`、`<br>` 这类形式，而不是 `<img></img>`。
 var htmlVoidTags = map[string]bool{
 	"area":   true,
 	"base":   true,
@@ -46,10 +58,11 @@ var htmlVoidTags = map[string]bool{
 	"wbr":    true,
 }
 
-// parseHTML builds a small DOM tree that is good enough for ordinary HTML mail
-// templates. It accepts common HTML syntax, including unquoted attributes and
-// void tags, because mail templates often need to remain directly previewable in
-// a browser.
+// parseHTML 把模板字符串解析为轻量 DOM 树。
+//
+// 这个解析器面向普通 HTML 邮件模板，支持常见标签、注释、doctype、未加引号属性和 void
+// 标签。它的目标不是完整实现 HTML5 解析算法，而是在不引入第三方依赖的前提下，让可浏览器
+// 预览的 Thymeleaf 风格模板可以被服务端渲染。
 func parseHTML(input string) (*node, error) {
 	root := &node{Type: documentNode}
 	stack := []*node{root}
@@ -142,6 +155,9 @@ func parseHTML(input string) (*node, error) {
 	return root, nil
 }
 
+// appendChild 向父节点追加子节点。
+//
+// 空文本节点没有渲染价值，直接忽略；其它节点按原始顺序保留。
 func appendChild(parent *node, child *node) {
 	if child.Type == textNode && child.Data == "" {
 		return
@@ -149,6 +165,9 @@ func appendChild(parent *node, child *node) {
 	parent.Children = append(parent.Children, child)
 }
 
+// findTagEnd 查找从 start 位置开始的标签结束符 `>`。
+//
+// 查找过程中会跳过属性引号里的 `>`，避免 `<a title="1 > 0">` 这种内容被错误截断。
 func findTagEnd(input string, start int) int {
 	var quote byte
 	for i := start + 1; i < len(input); i++ {
@@ -170,6 +189,9 @@ func findTagEnd(input string, start int) int {
 	return -1
 }
 
+// readTagName 从标签体里读取标签名和剩余属性字符串。
+//
+// 例如 `div class="x"` 会返回 `div` 与 ` class="x"`。
 func readTagName(body string) (string, string) {
 	for i, r := range body {
 		if unicode.IsSpace(r) || r == '/' {
@@ -179,6 +201,10 @@ func readTagName(body string) (string, string) {
 	return body, ""
 }
 
+// parseAttrs 解析标签属性。
+//
+// 支持双引号、单引号、未加引号和布尔属性；属性值会先做 html.UnescapeString，
+// 这样模板里的 `&amp;` 等实体在表达式处理前能还原为普通字符。
 func parseAttrs(input string) []attr {
 	var attrs []attr
 	for i := 0; i < len(input); {

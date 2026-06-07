@@ -7,15 +7,19 @@ import (
 	"strings"
 )
 
-// Entry is the value exposed when th:each iterates over a map.
+// Entry 是 th:each 遍历 map 时暴露给模板的条目值。
 //
-// It lets templates use expressions such as ${entry.key} and ${entry.value}.
+// 这样模板可以通过 `${entry.key}` 与 `${entry.value}` 读取 map 的键和值，而不是依赖
+// Go 反射里的 map 结构细节。
 type Entry struct {
 	Key   any
 	Value any
 }
 
-// IterationStatus mirrors the commonly used Thymeleaf iteration status fields.
+// IterationStatus 是 th:each 的迭代状态对象。
+//
+// 字段命名对齐 Thymeleaf 常用状态变量，模板可以使用 `${itemStat.count}`、
+// `${itemStat.first}`、`${itemStat.last}` 等表达式。
 type IterationStatus struct {
 	Index   int
 	Count   int
@@ -27,12 +31,19 @@ type IterationStatus struct {
 	Last    bool
 }
 
+// eachSpec 是解析后的 th:each 配置。
+//
+// itemVar 是当前项变量名，statusVar 是状态变量名，expr 是集合表达式。
 type eachSpec struct {
 	itemVar   string
 	statusVar string
 	expr      string
 }
 
+// renderEach 渲染 th:each 元素。
+//
+// Thymeleaf 的 th:each 会重复当前元素本身，而不是只重复子节点；因此每个元素项都会重新
+// 调用 renderElement，并在局部 scope 中放入 item 变量和状态变量。
 func (e *Engine) renderEach(n *node, s *scope, rawSpec string) (string, error) {
 	spec, err := parseEachSpec(rawSpec)
 	if err != nil {
@@ -73,6 +84,10 @@ func (e *Engine) renderEach(n *node, s *scope, rawSpec string) (string, error) {
 	return b.String(), nil
 }
 
+// parseEachSpec 解析 th:each 属性值。
+//
+// 支持 `item : ${items}` 和 `item, stat : ${items}` 两种写法；未显式声明状态变量时，
+// 默认使用 `itemStat`，这与 Thymeleaf 的默认命名习惯保持一致。
 func parseEachSpec(raw string) (eachSpec, error) {
 	parts := strings.SplitN(raw, ":", 2)
 	if len(parts) != 2 {
@@ -106,6 +121,10 @@ func parseEachSpec(raw string) (eachSpec, error) {
 	}, nil
 }
 
+// iterationItems 把可迭代值转换成 []any。
+//
+// 当前支持 slice、array 和 map。map 会按 key 的字符串形式排序，保证渲染结果稳定，
+// 避免 Go map 随机遍历顺序导致邮件内容或测试结果抖动。
 func iterationItems(value any) ([]any, error) {
 	if value == nil {
 		return nil, nil

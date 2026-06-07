@@ -9,17 +9,28 @@ import (
 	"unicode"
 )
 
+// exprToken 表示从模板文本中读取到的一个表达式 token。
+//
+// Kind 是表达式类型前缀，例如 `$`、`*`、`#`、`@`、`~`；Body 是花括号内部内容；
+// End 是表达式在原始字符串中的结束位置，便于继续扫描后续文本。
 type exprToken struct {
 	Kind byte
 	Body string
 	End  int
 }
 
+// pathSegment 表示属性路径中的一段。
+//
+// 例如 `user.addresses[0].city` 会被拆成 user、addresses[0]、city 三段。
 type pathSegment struct {
 	Name    string
 	Indexes []string
 }
 
+// evalAny 计算任意模板表达式。
+//
+// 它既支持完整表达式 `${...}`、`@{...}`，也支持混合写法，例如
+// `${active} ? 'on' : ”` 或普通字符串里内嵌多个表达式。
 func (e *Engine) evalAny(raw string, s *scope) (any, error) {
 	expr := strings.TrimSpace(raw)
 	if expr == "" {
@@ -56,6 +67,9 @@ func (e *Engine) evalAny(raw string, s *scope) (any, error) {
 	return e.evalInlineString(raw, s)
 }
 
+// evalString 计算表达式并把结果转换成字符串。
+//
+// HTML 属性值、th:classappend 等最终需要字符串，因此统一走这个方法做转换。
 func (e *Engine) evalString(raw string, s *scope) (string, error) {
 	value, err := e.evalAny(raw, s)
 	if err != nil {
@@ -64,6 +78,9 @@ func (e *Engine) evalString(raw string, s *scope) (string, error) {
 	return valueToString(value), nil
 }
 
+// evalInlineString 渲染包含内联表达式的普通字符串。
+//
+// 例如 `/orders/${order.id}` 会把 `${order.id}` 替换为变量值，非表达式内容保持原样。
 func (e *Engine) evalInlineString(raw string, s *scope) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(raw); {
@@ -84,6 +101,10 @@ func (e *Engine) evalInlineString(raw string, s *scope) (string, error) {
 	return b.String(), nil
 }
 
+// readExpressionAt 尝试从指定位置读取一个完整表达式。
+//
+// 支持 `${...}`、`*{...}`、`#{...}`、`@{...}`、`~{...}`。读取时会处理嵌套花括号和
+// 引号，避免 `${'a}b'}` 这类内容被提前截断。
 func readExpressionAt(input string, start int) (exprToken, bool) {
 	if start+2 > len(input) {
 		return exprToken{}, false
@@ -127,6 +148,9 @@ func readExpressionAt(input string, start int) (exprToken, bool) {
 	return exprToken{}, false
 }
 
+// evalExpression 根据表达式前缀分发到具体求值器。
+//
+// Thymeleaf 的不同表达式语义不同：变量、选择对象、消息、链接和片段都需要不同的数据源。
 func (e *Engine) evalExpression(kind byte, body string, s *scope) (any, error) {
 	switch kind {
 	case '$':
@@ -144,6 +168,10 @@ func (e *Engine) evalExpression(kind byte, body string, s *scope) (any, error) {
 	}
 }
 
+// evalStandardExpression 计算 ${...} 或 *{...} 内部的标准表达式。
+//
+// 支持字符串/数字/布尔字面量、属性路径、加号拼接、三元表达式、逻辑表达式和比较表达式。
+// root 参数决定属性路径的起点：${...} 使用 Context.Root，*{...} 使用当前 Selection。
 func (e *Engine) evalStandardExpression(raw string, s *scope, root any) (any, error) {
 	expr := strings.TrimSpace(raw)
 	if expr == "" {
@@ -275,6 +303,11 @@ func (e *Engine) evalStandardExpression(raw string, s *scope, root any) (any, er
 	return e.evalPath(expr, s, root)
 }
 
+// evalMixedStandardExpression 计算表达式外层混合了操作符的写法。
+//
+// 模板作者常写 `th:classappend="${active} ? 'on' : ”"` 或
+// `th:if="${count} > 1"`。这类写法不是单个 `${...}` 包裹全部内容，所以需要先把
+// 两侧表达式分别求值，再执行逻辑、比较或三元运算。
 func (e *Engine) evalMixedStandardExpression(raw string, s *scope) (any, bool, error) {
 	expr := strings.TrimSpace(raw)
 	if expr == "" {
@@ -376,6 +409,10 @@ func (e *Engine) evalMixedStandardExpression(raw string, s *scope) (any, bool, e
 	return nil, false, nil
 }
 
+// evalPath 按属性路径从变量、map、结构体或当前 root 中读取值。
+//
+// 第一段路径会优先查当前作用域变量；找不到时再从 root 读取属性。
+// 后续路径段都基于上一段结果继续解析。
 func (e *Engine) evalPath(raw string, s *scope, root any) (any, error) {
 	path := strings.TrimSpace(raw)
 	if path == "." || path == "this" {
@@ -421,6 +458,10 @@ func (e *Engine) evalPath(raw string, s *scope, root any) (any, error) {
 	return current, nil
 }
 
+// parsePath 把点号路径解析为 pathSegment 切片。
+//
+// 支持 `user.name`、`items[0]`、`map['key']` 这类常见写法，但不实现完整 Java Bean
+// 表达式语言。
 func parsePath(path string) ([]pathSegment, error) {
 	var segments []pathSegment
 	for i := 0; i < len(path); {
@@ -452,6 +493,9 @@ func parsePath(path string) ([]pathSegment, error) {
 	return segments, nil
 }
 
+// findClosingBracket 查找路径索引表达式的右方括号。
+//
+// 查找时会跳过引号里的 `]`，让 `map['a]b']` 这类 key 能被正确识别。
 func findClosingBracket(path string, start int) int {
 	var quote byte
 	for i := start + 1; i < len(path); i++ {
@@ -477,6 +521,9 @@ func findClosingBracket(path string, start int) int {
 	return -1
 }
 
+// applyIndexes 依次应用路径段上的索引。
+//
+// 一个路径段允许出现多个索引，例如 `matrix[0][1]`，这里会逐层取值。
 func applyIndexes(value any, indexes []string, s *scope) (any, error) {
 	current := value
 	for _, index := range indexes {
@@ -493,6 +540,9 @@ func applyIndexes(value any, indexes []string, s *scope) (any, error) {
 	return current, nil
 }
 
+// resolveIndexValue 解析方括号里的索引值。
+//
+// 支持字符串字面量、数字字面量和作用域变量；其它内容会按原始字符串作为 map key 使用。
 func resolveIndexValue(raw string, s *scope) (any, error) {
 	if unquoted, ok := unquoteLiteral(raw); ok {
 		return unquoted, nil
@@ -506,6 +556,9 @@ func resolveIndexValue(raw string, s *scope) (any, error) {
 	return raw, nil
 }
 
+// resolveIndex 对 slice、array、string 或 map 执行单次索引读取。
+//
+// map 索引会先尝试精确类型匹配，失败后再用字符串形式兜底，以兼容模板里的字符串 key。
 func resolveIndex(value any, index any) (any, bool) {
 	rv := reflect.ValueOf(value)
 	for rv.IsValid() && (rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer) {
@@ -555,6 +608,9 @@ func resolveIndex(value any, index any) (any, bool) {
 	return nil, false
 }
 
+// resolveProperty 从 map、结构体、方法或集合长度中读取属性。
+//
+// 结构体支持导出字段、json tag 和无参 getter；slice/array/string 支持 size 和 length。
 func resolveProperty(value any, name string) (any, bool) {
 	if name == "" {
 		return value, true
@@ -588,6 +644,9 @@ func resolveProperty(value any, name string) (any, bool) {
 	return nil, false
 }
 
+// resolveMapProperty 从 map 中读取属性。
+//
+// 字符串 key 会优先精确匹配；其它 key 类型或大小写不一致时，会用字符串形式做宽松匹配。
 func resolveMapProperty(rv reflect.Value, name string) (any, bool) {
 	if rv.Type().Key().Kind() == reflect.String {
 		key := reflect.ValueOf(name).Convert(rv.Type().Key())
@@ -607,6 +666,9 @@ func resolveMapProperty(rv reflect.Value, name string) (any, bool) {
 	return nil, false
 }
 
+// resolveStructField 从结构体导出字段中读取属性。
+//
+// 匹配顺序包含字段名、字段名大小写不敏感匹配，以及 json tag 名称。
 func resolveStructField(rv reflect.Value, name string) (any, bool) {
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
@@ -622,6 +684,9 @@ func resolveStructField(rv reflect.Value, name string) (any, bool) {
 	return nil, false
 }
 
+// resolveStructMethod 从结构体无参方法中读取属性。
+//
+// 支持 `name`、`GetName`、`IsName` 三种方法命名，方法必须无入参且只有一个返回值。
 func resolveStructMethod(rv reflect.Value, name string) (any, bool) {
 	candidates := []string{name, "Get" + upperFirst(name), "Is" + upperFirst(name)}
 	for _, candidate := range candidates {
@@ -636,6 +701,10 @@ func resolveStructMethod(rv reflect.Value, name string) (any, bool) {
 	return nil, false
 }
 
+// evalMessageExpression 计算 #{...} 消息表达式。
+//
+// 支持 `#{key}` 和 `#{key(${param})}`。消息模板中的 `{0}`、`{1}` 会按参数顺序替换。
+// 如果 Context.Messages 中没有对应 key，则返回 key 本身，便于开发阶段发现缺失文案。
 func (e *Engine) evalMessageExpression(raw string, s *scope) (any, error) {
 	keyExpr, paramExprs := splitCall(strings.TrimSpace(raw))
 	key, err := e.evalMessageKey(keyExpr, s)
@@ -658,6 +727,9 @@ func (e *Engine) evalMessageExpression(raw string, s *scope) (any, error) {
 	return message, nil
 }
 
+// evalMessageKey 解析消息 key。
+//
+// key 可以是普通字符串、带引号的字面量，也可以是一个完整表达式，例如 `#{${messageKey}}`。
 func (e *Engine) evalMessageKey(raw string, s *scope) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if unquoted, ok := unquoteLiteral(raw); ok {
@@ -673,6 +745,10 @@ func (e *Engine) evalMessageKey(raw string, s *scope) (string, error) {
 	return raw, nil
 }
 
+// evalURLExpression 计算 @{...} 链接表达式。
+//
+// 支持路径变量和查询参数，例如 `@{/orders/{id}(id=${order.id},token=${token})}`。
+// 如果 Context.BaseURL 不为空且路径以 `/` 开头，会自动拼接为绝对地址。
 func (e *Engine) evalURLExpression(raw string, s *scope) (any, error) {
 	pathExpr, paramsExpr := splitURLParams(strings.TrimSpace(raw))
 	if unquoted, ok := unquoteLiteral(pathExpr); ok {
@@ -716,6 +792,10 @@ func (e *Engine) evalURLExpression(raw string, s *scope) (any, error) {
 	return u.String(), nil
 }
 
+// evalURLParams 解析链接表达式括号中的参数。
+//
+// 参数格式为 `name=expr`，多个参数用逗号分隔；每个参数值都会再次走 evalAny，
+// 因此可以使用变量表达式、字符串字面量或混合表达式。
 func (e *Engine) evalURLParams(raw string, s *scope) (map[string]any, error) {
 	params := map[string]any{}
 	raw = strings.TrimSpace(raw)
@@ -738,6 +818,10 @@ func (e *Engine) evalURLParams(raw string, s *scope) (map[string]any, error) {
 	return params, nil
 }
 
+// evalFragmentExpression 计算 ~{...} 片段表达式。
+//
+// 当前实现从 Context.Fragments 中按 key 读取 HTML 片段。这个设计适合邮件模板复用页脚、
+// 公司签名、退订说明等固定片段。
 func (e *Engine) evalFragmentExpression(raw string, s *scope) (any, error) {
 	key := strings.TrimSpace(raw)
 	if unquoted, ok := unquoteLiteral(key); ok {
@@ -753,6 +837,9 @@ func (e *Engine) evalFragmentExpression(raw string, s *scope) (any, error) {
 	return "", fmt.Errorf("unknown fragment %q", key)
 }
 
+// splitTernary 拆分顶层三元表达式。
+//
+// 只识别顶层的 `?` 与 `:`，不会把引号、括号或花括号内部的符号误判为三元表达式。
 func splitTernary(raw string) (string, string, string, bool) {
 	question := findTopLevelByte(raw, '?')
 	if question < 0 {
@@ -766,6 +853,9 @@ func splitTernary(raw string) (string, string, string, bool) {
 	return strings.TrimSpace(raw[:question]), strings.TrimSpace(raw[question+1 : colon]), strings.TrimSpace(raw[colon+1:]), true
 }
 
+// splitComparison 拆分顶层比较表达式。
+//
+// operator 由调用方按优先顺序传入，例如先匹配 `>=` 再匹配 `>`，避免长操作符被截断。
 func splitComparison(raw string, operator string) (string, string, bool) {
 	index := findTopLevelString(raw, operator)
 	if index < 0 {
@@ -774,6 +864,10 @@ func splitComparison(raw string, operator string) (string, string, bool) {
 	return strings.TrimSpace(raw[:index]), strings.TrimSpace(raw[index+len(operator):]), true
 }
 
+// splitURLParams 把 @{...} 拆成路径部分和参数部分。
+//
+// 例如 `/orders/{id}(id=${id})` 会拆成 `/orders/{id}` 与 `id=${id}`。
+// 只识别顶层括号，避免路径变量里的花括号影响判断。
 func splitURLParams(raw string) (string, string) {
 	var quote byte
 	braceDepth := 0
@@ -810,6 +904,9 @@ func splitURLParams(raw string) (string, string) {
 	return raw, ""
 }
 
+// splitTopLevelOperator 按顶层操作符拆分表达式。
+//
+// 只拆分不在引号、括号、方括号、花括号内部的操作符，适合处理 `&&`、`||` 这类符号。
 func splitTopLevelOperator(raw string, operator string) []string {
 	var out []string
 	start := 0
@@ -829,6 +926,10 @@ func splitTopLevelOperator(raw string, operator string) []string {
 	return out
 }
 
+// splitTopLevelWord 按顶层关键字拆分表达式。
+//
+// 用于处理 `and`、`or` 这类文字操作符，并通过 isIdentifierRune 避免把变量名里的片段误判
+// 成关键字，例如 `order` 不会被拆成 `or`。
 func splitTopLevelWord(raw string, word string) []string {
 	var out []string
 	start := 0
@@ -848,6 +949,9 @@ func splitTopLevelWord(raw string, word string) []string {
 	return out
 }
 
+// findTopLevelByte 查找顶层单字符符号的位置。
+//
+// 顶层表示当前位置不在引号或任何括号结构内部。
 func findTopLevelByte(raw string, target byte) int {
 	return findTopLevel(raw, func(raw string, i int) int {
 		if raw[i] == target {
@@ -857,6 +961,9 @@ func findTopLevelByte(raw string, target byte) int {
 	})
 }
 
+// findTopLevelString 查找顶层字符串符号的位置。
+//
+// 主要用于比较操作符和逻辑操作符的定位。
 func findTopLevelString(raw string, target string) int {
 	return findTopLevel(raw, func(raw string, i int) int {
 		if strings.HasPrefix(raw[i:], target) {
@@ -866,6 +973,9 @@ func findTopLevelString(raw string, target string) int {
 	})
 }
 
+// findTopLevelWord 查找顶层关键字的位置。
+//
+// 只有关键字两侧都不是标识符字符时才算匹配，避免误伤变量名或属性名。
 func findTopLevelWord(raw string, word string) int {
 	return findTopLevel(raw, func(raw string, i int) int {
 		if !strings.HasPrefix(raw[i:], word) {
@@ -881,6 +991,9 @@ func findTopLevelWord(raw string, word string) int {
 	})
 }
 
+// findTopLevel 是顶层查找的通用实现。
+//
+// 它维护引号状态和括号深度，调用方只需要提供当前位置是否命中的判断函数。
 func findTopLevel(raw string, match func(raw string, i int) int) int {
 	var quote byte
 	depth := 0
@@ -916,6 +1029,9 @@ func findTopLevel(raw string, match func(raw string, i int) int) int {
 	return -1
 }
 
+// splitCall 拆分函数式调用表达式。
+//
+// 例如 `mail.hello(${name})` 会拆成 `mail.hello` 和参数列表。当前主要服务于消息表达式。
 func splitCall(raw string) (string, []string) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasSuffix(raw, ")") {
@@ -928,6 +1044,9 @@ func splitCall(raw string) (string, []string) {
 	return strings.TrimSpace(raw[:start]), splitTopLevel(raw[start+1:len(raw)-1], ',')
 }
 
+// splitTopLevel 按顶层分隔符拆分字符串。
+//
+// 常用于逗号参数列表和加号拼接表达式，确保引号或括号内部的分隔符不会被拆开。
 func splitTopLevel(raw string, sep byte) []string {
 	var out []string
 	var quote byte
@@ -967,6 +1086,9 @@ func splitTopLevel(raw string, sep byte) []string {
 	return out
 }
 
+// compareValues 根据指定比较操作符比较两个值。
+//
+// 两侧都能转成数字时按数值比较，否则按字符串比较；这种策略足够覆盖邮件模板里的状态判断。
 func compareValues(left any, right any, operator string) bool {
 	if leftFloat, leftOK := toFloat64(left); leftOK {
 		if rightFloat, rightOK := toFloat64(right); rightOK {
@@ -1007,6 +1129,9 @@ func compareValues(left any, right any, operator string) bool {
 	}
 }
 
+// toFloat64 尝试把常见数字类型或数字字符串转换为 float64。
+//
+// 比较表达式会用它判断是否可以进行数值比较。
 func toFloat64(value any) (float64, bool) {
 	switch v := value.(type) {
 	case int:
@@ -1041,6 +1166,10 @@ func toFloat64(value any) (float64, bool) {
 	}
 }
 
+// isTruthy 把任意值转换为条件判断中的真假值。
+//
+// 规则面向模板使用习惯：nil、false、0、空字符串、"false"、"0"、空集合都为假，
+// 其它值为真。
 func isTruthy(value any) bool {
 	if value == nil {
 		return false
@@ -1076,10 +1205,16 @@ func isTruthy(value any) bool {
 	}
 }
 
+// isIdentifierRune 判断字符是否属于表达式标识符的一部分。
+//
+// 点号也视为标识符字符，是为了让 `user.name` 在关键字查找时被当成连续路径。
 func isIdentifierRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.'
 }
 
+// unquoteLiteral 解析字符串字面量。
+//
+// 支持单引号和双引号，并处理常见转义字符；返回值中的 bool 表示输入是否确实是字符串字面量。
 func unquoteLiteral(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if len(raw) < 2 {
@@ -1096,6 +1231,9 @@ func unquoteLiteral(raw string) (string, bool) {
 	return body, true
 }
 
+// asInt 尝试把值转换为 int。
+//
+// 索引读取 slice、array、string 时需要整数下标，因此这里兼容常见整数类型和数字字符串。
 func asInt(value any) (int, bool) {
 	switch v := value.(type) {
 	case int:
@@ -1126,6 +1264,9 @@ func asInt(value any) (int, bool) {
 	}
 }
 
+// upperFirst 把字符串首字母转为大写。
+//
+// 结构体 getter 匹配会用它从 `name` 推导出 `GetName` 或 `IsName`。
 func upperFirst(value string) string {
 	if value == "" {
 		return ""
@@ -1135,6 +1276,9 @@ func upperFirst(value string) string {
 	return string(runes)
 }
 
+// valueToString 把任意渲染结果转换为字符串。
+//
+// nil 会输出为空字符串；实现 fmt.Stringer 的值优先使用 String 方法。
 func valueToString(value any) string {
 	if value == nil {
 		return ""
